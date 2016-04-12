@@ -4,7 +4,6 @@ import numpy as np
 import theano.tensor.nnet as nnet
 from keras import backend as K
 from keras import initializations
-import sys
 
 # SETUP
 floatX = theano.config.floatX
