@@ -4,46 +4,47 @@ import numpy as np
 import theano.tensor.nnet as nnet
 from keras import backend as K
 from keras import initializations
+import sys
 
 # SETUP
 floatX = theano.config.floatX
 np.random.seed(1)
 init = initializations.get('uniform')
 
+# SPECIFY THE PARAMETER TO TAKE GRADIENT OVER
+d_gate = 2
+d_component = 0
+
 
 def sigmoid(a):
 	return 1 / (1 + np.exp(-a))
 
 # DIMS
-x_size = 2
-h_size = 3
+x_size = 3
+h_size = 5
 
-# WEIGHT MATRICES;
-W_ix = init((h_size, x_size))
-W_ih = init((h_size, h_size))
-# W_ic = init((h_size, x_size))
-b_i = K.zeros(h_size)
+w_shape = (h_size, x_size)
+v_shape = (h_size, h_size)
+b_shape = h_size
 
-W_fx = init((h_size, x_size))
-W_fh = init((h_size, h_size))
-# W_fc = init((h_size, x_size))
-b_f = K.zeros(h_size)
+weights = []
 
-W_cx = init((h_size, x_size))
-W_ch = init((h_size, h_size))
-# W_cc = init((h_size, x_size))
-b_c = K.zeros(h_size)
+# i: 0, 1, 2, 3 corresponding to input, forget, output, and cell weighted inputs
+# j: 0, 1, 2 corresponding to weights of x, h_tm1, and b
 
-# PARAMETERIZING W_ox TO EXAMINE GRADIENTS
-# W_ox = init((h_size, x_size))
-W_ox = T.matrix('W_ox', dtype=floatX)
-W_oh = init((h_size, h_size))
-# W_oc = init((h_size, x_size))
-b_o = K.zeros(h_size)
+for i in xrange(4):
+	weights.append([])
+	weights[i].append(init(w_shape))
+	weights[i].append(init(v_shape))
+	weights[i].append(K.zeros(b_shape))
+
+# INPUT PERTURBATION FOR NUMERICAL GRADIENTS
+delta = T.matrix('delta', dtype=floatX)
 
 # MODEL I/O
 data_in = T.matrix('data_in', dtype=floatX)
 data_out = T.matrix('data_out', dtype=floatX)
+# INITIAL STATES FOR CELL AND HIDDEN
 c0 = T.vector('c0', dtype=floatX)
 h0 = T.vector('h0', dtype=floatX)
 
@@ -54,64 +55,88 @@ outer_activation = T.tanh
 
 # LOOPING THROUGH DATA POINTS
 def _step(x, y, c_tm1, h_tm1):
-	G_i = inner_activation(K.dot(W_ix, x) + K.dot(W_ih, h_tm1) + b_i)
-	G_f = inner_activation(K.dot(W_fx, x) + K.dot(W_fh, h_tm1) + b_f)
-	c_tilde = outer_activation(K.dot(W_cx, x) + K.dot(W_ch, h_tm1) + b_c)
-	cell = G_f * c_tm1 + G_i * c_tilde
-	in_o = K.dot(W_ox, x) + K.dot(W_oh, h_tm1) + b_o
-	G_o = inner_activation(in_o)
-	hidden = G_o * cell
+	'''
+	return: cell, hidden, error, de/dcell_in (for graves gradients), four gates (for wang gradients)
+	'''
+	# CONSTRUCT WEIGHTED INPUTS FOR GATES
+	gates_in = []
+	for i in xrange(4):
+		w = weights[i][0]
+		v = weights[i][1]
+		b = weights[i][2]
+
+		if d_gate == i:
+			if 0 == d_component:
+				w += delta
+			elif 1 == d_component:
+				v += delta
+
+		gates_in.append(K.dot(w, x) + K.dot(v, h_tm1) + b)
+
+	# CALCULATE GATES
+	gates = []
+	for i in xrange(3):
+		gates.append(inner_activation(gates_in[i]))
+	gates.append(outer_activation(gates_in[3]))
+
+	# CALCULATE CELL
+	cell = gates[1] * c_tm1 + gates[0] * gates[3]
+
+	# CALCULATE OUTPUT
+	hidden = gates[2] * cell
+
+	# CALCULATE ERROR
 	err = K.dot(hidden, y)  # INNER PRODUCT as LOSS
-	# err = K.dot(hidden, y) ** 2 / 2  # MSE of INNER PRODUCT as LOSS
-	return c_tilde, cell, hidden, err, theano.gradient.grad(err, in_o), G_i, G_o
 
-[c_tilde, c, h, e, d_ox, gi, go], _ = theano.scan(_step,
+	return cell, hidden, err, theano.gradient.grad(err, gates_in[d_gate]), gates[0], gates[1], gates[2], gates[3]
+
+[c, h, e, graves_delta, gi, gf, go, gc], _ = theano.scan(_step,
 								sequences=[data_in, data_out],
-								outputs_info=[None, c0, h0, None, None, None, None])  # RECURRENCE ON c AND h ONLY
+								outputs_info=[c0, h0, None, None, None, None, None, None])  # RECURRENCE ON c AND h ONLY
 
-# CALCULATING THEANO GRADIENT delta(t) = dE(t) / dw
+# CALCULATING THEANO GRADIENT delta(t) = dE(t) / dw (last time step)
 err = e[-1]
-theano_d = theano.gradient.grad(err, W_ox)
+theano_d = theano.gradient.grad(err, weights[d_gate][d_component])
 
 # COMPILING THEANO FUNCTION
-lstm = theano.function(inputs=[data_in, data_out, c0, h0, W_ox],
-						outputs=[c_tilde, c, h, e, d_ox, theano_d, gi, go, W_ch, W_oh], on_unused_input='ignore')
+# returning weights[d_gate][1]: the weight matrix for the recurrent term h_tm1, which is often required by wang gradients
+lstm = theano.function(inputs=[data_in, data_out, c0, h0, delta],
+						outputs=[c, h, e, theano_d, graves_delta, gi, gf, go, gc, weights[d_gate][1]], on_unused_input='ignore')
 
 # MODEL I/O
 N = 5
 data_in = np.random.random((N, x_size)).astype(floatX)
 data_out = np.random.random((N, h_size)).astype(floatX)
 
-graves_gradient_x = np.array(data_in, copy=True)
+graves_x = np.array(data_in, copy=True)
 # SHIFTING X FOR CALCULATING GRAVES GRADIENT delta(t) * x(t - 1)
 for i in range(N - 1, 0, -1):  # [0] and [1] will be the same but [0] will not be used
-	graves_gradient_x[i] = graves_gradient_x[i - 1]
-graves_gradient_x = graves_gradient_x.reshape(N, 1, x_size)
+	graves_x[i] = graves_x[i - 1]
+graves_x = graves_x.reshape(N, 1, x_size)
 
 # INIT STATES
 c0 = np.zeros(h_size).astype(floatX)
 h0 = np.zeros(h_size).astype(floatX)
-# WEIGHT MATRIX
-w = np.random.random((h_size, x_size)).astype(floatX)
 
 eps = 1e-4
 
+params_shape = w_shape if 0 == d_component else v_shape
+
 # for pos in xrange(w.size):
-xshape = w.shape
-# xshape = (1, 1)
-for ir in xrange(xshape[0]):
-	for ic in xrange(xshape[1]):
+for ir in xrange(params_shape[0]):
+	for ic in xrange(params_shape[1]):
 		# CONSTRUCTING DELTA AT POSITION pos
-		delta = np.zeros(w.shape).astype(floatX)
-		delta[ir][ic] = w[ir][ic] * eps
+		delta = np.zeros(params_shape).astype(floatX)
+		delta[ir][ic] = eps
+		# delta[ir][ic] = w[ir][ic] * eps
 
 		# y- AND y+
-		[c_tilde, c1, h1, e1, d_ox1, theano_d1, gi_1, go_1, W_ch_1, W_oh_1] = lstm(data_in, data_out, c0, h0, w - delta)
-		[c_tilde, c2, h2, e2, d_ox2, theano_d2, gi_2, go_2, W_ch_2, W_oh_2] = lstm(data_in, data_out, c0, h0, w + delta)
+		[c1, h1, e1, theano_d1, graves_delta1, gi_1, gf_1, go_1, gc_1, v1] = lstm(data_in, data_out, c0, h0, -delta)
+		[c2, h2, e2, theano_d2, graves_delta2, gi_2, gf_2, go_2, gc_2, v2] = lstm(data_in, data_out, c0, h0, delta)
 
-		print('err1', e1)
-		print('err2', e2)
-
+		# print('err1', e1)
+		# print('err2', e2)
+		print("R%dC%d" % (ir, ic))
 		'''
 		######### THEANO GRADIENT #########
 		'''
@@ -121,14 +146,14 @@ for ir in xrange(xshape[0]):
 		######### NUMERICAL GRADIENT #########
 		'''
 		de = e2[-1] - e1[-1]
-		print("numerical:\t%.6e" % (de / delta[ir][ic] / 2))
+		print("num.:\t%.6e" % (de / delta[ir][ic] / 2))
 
 		'''
 		######### GRAVES GRADIENT #########
 		'''
 		# print("delta:", outputs1[3])
 		# print("x:", data_in)
-		graves_gradient = d_ox1.reshape(N, h_size, 1) * graves_gradient_x
+		graves_gradient = graves_delta1.reshape(N, h_size, 1) * graves_x
 		graves_gradient = graves_gradient[1:].sum(axis=0)
 		print("graves:\t%.6e" % (graves_gradient[ir][ic]))
 
@@ -140,18 +165,8 @@ for ir in xrange(xshape[0]):
 		dy_dw = (c1[0] * go_1[0] * (1 - go_1[0])).reshape(h_size, 1) * data_in[0].reshape(1, x_size)  # h_size X x_size
 		for t in xrange(1, N):
 			templ = (c1[t] * go_1[t] * (1 - go_1[t])).reshape(h_size, 1)
-			tempr = data_in[t].reshape(1, x_size) + np.dot(W_oh_1, dy_dw)
+			tempr = data_in[t].reshape(1, x_size) + np.dot(v1, dy_dw)
 			dy_dw = templ * tempr
 
 		dy_dw *= dEdy_t.reshape(h_size, 1)
 		print("wang:\t%.6e" % (dy_dw[ir][ic]))
-
-		# print(mult.shape, dy_0dw.shape, wang_gradient.shape)
-
-		# print(mult.shape)
-		# print(gi_1.shape, go_1.shape, in_c1.shape, W_ch_1.shape)
-		# print(gi_1.shape, go_1.shape)
-		# print(W_ch_1, W_ch_2)
-
-		# print(graves_gradient)
-		# print(graves_gradient.shape)
