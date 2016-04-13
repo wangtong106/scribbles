@@ -11,7 +11,7 @@ np.random.seed(1)
 init = initializations.get('uniform')
 
 # SPECIFY THE PARAMETER TO TAKE GRADIENT OVER
-d_gate = 2
+d_gate = 0
 d_component = 0
 
 
@@ -19,8 +19,8 @@ def sigmoid(a):
 	return 1 / (1 + np.exp(-a))
 
 # DIMS
-x_size = 3
-h_size = 5
+x_size = 2
+h_size = 3
 
 w_shape = (h_size, x_size)
 v_shape = (h_size, h_size)
@@ -161,11 +161,31 @@ for ir in xrange(params_shape[0]):
 		'''
 		dEdy_t = data_out[-1]  # INNER PRODUCT LOSS:/dy = y_hat (h_size)
 
-		dy_dw = (c1[0] * go_1[0] * (1 - go_1[0])).reshape(h_size, 1) * data_in[0].reshape(1, x_size)  # h_size X x_size
-		for t in xrange(1, N):
-			templ = (c1[t] * go_1[t] * (1 - go_1[t])).reshape(h_size, 1)
-			tempr = data_in[t].reshape(1, x_size) + np.dot(v1, dy_dw)
-			dy_dw = templ * tempr
+		matrix_id = (d_gate, d_component)
+		if (0, 0) == matrix_id:  # w_ix
+			dy_dw = (go_1[0] * gc_1[0] * gi_1[0] * (1 - gi_1[0])).reshape(h_size, 1) * data_in[0].reshape(1, x_size)  # h_size X x_size
+			for t in xrange(1, N):
+				templ = (go_1[t] * gc_1[t] * gi_1[t] * (1 - gi_1[t])).reshape(h_size, 1)
+				tempr = data_in[t].reshape(1, x_size) + np.dot(v1, dy_dw)
+				dy_dw = templ * tempr
+		elif (0, 1) == matrix_id:  # w_ih
+			pass
+		elif (1, 0) == matrix_id:  # w_fx
+			pass
+		elif (1, 1) == matrix_id:  # w_fh
+			pass
+		elif (2, 0) == matrix_id:  # w_ox
+			dy_dw = (c1[0] * go_1[0] * (1 - go_1[0])).reshape(h_size, 1) * data_in[0].reshape(1, x_size)  # h_size X x_size
+			for t in xrange(1, N):
+				templ = (c1[t] * go_1[t] * (1 - go_1[t])).reshape(h_size, 1)
+				tempr = data_in[t].reshape(1, x_size) + np.dot(v1, dy_dw)
+				dy_dw = templ * tempr
+		elif (2, 1) == matrix_id:  # w_oh
+			pass
+		elif (3, 0) == matrix_id:  # w_fx
+			pass
+		elif (3, 1) == matrix_id:  # w_fh
+			pass
 
-		dy_dw *= dEdy_t.reshape(h_size, 1)
+		dy_dw = dEdy_t.reshape(h_size, 1) * dy_dw
 		print("wang:\t%.6e" % (dy_dw[ir][ic]))
