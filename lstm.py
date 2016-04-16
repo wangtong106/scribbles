@@ -4,6 +4,7 @@ import numpy as np
 import theano.tensor.nnet as nnet
 from keras import backend as K
 from keras import initializations
+import sys
 
 # SETUP
 floatX = theano.config.floatX
@@ -11,7 +12,9 @@ np.random.seed(1)
 init = initializations.get('uniform')
 
 # SPECIFY THE PARAMETER TO TAKE GRADIENT OVER
-d_gate = 0
+# i: 0, 1, 2, 3 corresponding to input, forget, output, and cell weighted inputs
+# j: 0, 1, 2 corresponding to weights of x, h_tm1, and b
+d_gate = 2
 d_component = 0
 
 
@@ -27,9 +30,6 @@ v_shape = (h_size, h_size)
 b_shape = h_size
 
 weights = []
-
-# i: 0, 1, 2, 3 corresponding to input, forget, output, and cell weighted inputs
-# j: 0, 1, 2 corresponding to weights of x, h_tm1, and b
 
 for i in xrange(4):
 	weights.append([])
@@ -113,13 +113,21 @@ for i in range(N - 1, 0, -1):  # [0] and [1] will be the same but [0] will not b
 	graves_x[i] = graves_x[i - 1]
 graves_x = graves_x.reshape(N, 1, x_size)
 
-# INIT STATES
+# INITIAL STATES
 c0 = np.zeros(h_size).astype(floatX)
 h0 = np.zeros(h_size).astype(floatX)
 
 eps = 1e-4
 
 params_shape = w_shape if 0 == d_component else v_shape
+
+
+def dg(gates, gid):
+	gate = gates[gid]
+	if 3 == gid:  # cell, tanh
+		return 1 - gate * gate
+	else:
+		return gate * (1 - gate)  # gates, sigmoid
 
 # for pos in xrange(w.size):
 for ir in xrange(params_shape[0]):
@@ -145,7 +153,7 @@ for ir in xrange(params_shape[0]):
 		######### NUMERICAL GRADIENT #########
 		'''
 		de = e2[-1] - e1[-1]
-		print("num.:\t%.6e" % (de / delta[ir][ic] / 2))
+		print("num.:\t%.6e" % (de / eps / 2))
 
 		'''
 		######### GRAVES GRADIENT #########
@@ -160,32 +168,37 @@ for ir in xrange(params_shape[0]):
 		######### WANG GRADIENT #########
 		'''
 		dEdy_t = data_out[-1]  # INNER PRODUCT LOSS:/dy = y_hat (h_size)
+		# print("dEdy_t.shape", dEdy_t.shape)
 
-		matrix_id = (d_gate, d_component)
-		if (0, 0) == matrix_id:  # w_ix
-			dy_dw = (go_1[0] * gc_1[0] * gi_1[0] * (1 - gi_1[0])).reshape(h_size, 1) * data_in[0].reshape(1, x_size)  # h_size X x_size
-			for t in xrange(1, N):
-				templ = (go_1[t] * gc_1[t] * gi_1[t] * (1 - gi_1[t])).reshape(h_size, 1)
-				tempr = data_in[t].reshape(1, x_size) + np.dot(v1, dy_dw)
-				dy_dw = templ * tempr
-		elif (0, 1) == matrix_id:  # w_ih
-			pass
-		elif (1, 0) == matrix_id:  # w_fx
-			pass
-		elif (1, 1) == matrix_id:  # w_fh
-			pass
-		elif (2, 0) == matrix_id:  # w_ox
-			dy_dw = (c1[0] * go_1[0] * (1 - go_1[0])).reshape(h_size, 1) * data_in[0].reshape(1, x_size)  # h_size X x_size
-			for t in xrange(1, N):
-				templ = (c1[t] * go_1[t] * (1 - go_1[t])).reshape(h_size, 1)
-				tempr = data_in[t].reshape(1, x_size) + np.dot(v1, dy_dw)
-				dy_dw = templ * tempr
-		elif (2, 1) == matrix_id:  # w_oh
-			pass
-		elif (3, 0) == matrix_id:  # w_fx
-			pass
-		elif (3, 1) == matrix_id:  # w_fh
-			pass
+		def dg_alpha_dw_beta_x(gates, alpha, beta, x_t, w_alpha_y, d_y_tm1):
+			dg_alpha = dg(gates, alpha)
+			if alpha == beta:
+				return dg_alpha.reshape(h_size, 1) * (x_t + np.dot(w_alpha_y, d_y_tm1))
+			else:
+				return dg_alpha.reshape(h_size, 1) * np.dot(w_alpha_y, d_y_tm1)
 
-		dy_dw = dEdy_t.reshape(h_size, 1) * dy_dw
-		print("wang:\t%.6e" % (dy_dw[ir][ic]))
+		def dc_dw_beta_x(gates, c_tm1, dc_tm1, beta, x_t, w_alpha_y, d_y_tm1):
+			retval = gates[0].reshape(h_size, 1) * dg_alpha_dw_beta_x(gates, 3, beta, x_t, w_alpha_y, d_y_tm1)
+			retval += gates[3].reshape(h_size, 1) * dg_alpha_dw_beta_x(gates, 0, beta, x_t, w_alpha_y, d_y_tm1)
+			retval += gates[1].reshape(h_size, 1) * dc_tm1
+			retval += c_tm1.reshape(h_size, 1) * dg_alpha_dw_beta_x(gates, 1, beta, x_t, w_alpha_y, d_y_tm1)
+			retval = gates[2].reshape(h_size, 1) * retval
+			return retval
+
+		def dy_dw_beta_x(gates, beta, cell, x_t, w_alpha_y, dy_tm1, dc):
+			retval = cell * dg(gates, 3)
+			retval = retval.reshape(h_size, 1) * (x_t + np.dot(w_alpha_y, dy_tm1))
+			retval = retval + gates[3].reshape(h_size, 1) * dc
+			return retval
+
+		dy = np.zeros((h_size, params_shape[0], params_shape[1])).astype(floatX)
+		dc = np.zeros((h_size, params_shape[0], params_shape[1])).astype(floatX)
+		c_tm1 = c0
+		for t in xrange(0, N):
+			gates = [gi_1[t], gf_1[t], go_1[t], gc_1[t]]
+			dc = dc_dw_beta_x(gates, c_tm1, dc, d_component, data_in[t], v1, dy)
+			dy = dy_dw_beta_x(gates, d_component, c1[t], data_in[t], v1, dy, dc)
+
+
+		dy = dEdy_t.reshape(h_size, 1) * dy
+		print("wang:\t%.6e" % (dy[0][ir][ic]))
