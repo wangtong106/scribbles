@@ -14,8 +14,8 @@ init = initializations.get('uniform')
 # SPECIFY THE PARAMETER TO TAKE GRADIENT OVER
 # i: 0, 1, 2, 3 corresponding to input, forget, output, and cell weighted inputs
 # j: 0, 1, 2 corresponding to weights of x, h_tm1, and b
-d_gate = 2
-d_component = 0
+d_gate = int(sys.argv[1]) if len(sys.argv) > 1 else 0
+d_component = int(sys.argv[2]) if len(sys.argv) > 2 else 0
 
 
 def sigmoid(a):
@@ -170,25 +170,23 @@ for ir in xrange(params_shape[0]):
 		dEdy_t = data_out[-1]  # INNER PRODUCT LOSS:/dy = y_hat (h_size)
 		# print("dEdy_t.shape", dEdy_t.shape)
 
-		def dg_alpha_dw_beta_x(gates, alpha, beta, x_t, w_alpha_y, d_y_tm1):
+		def dg_alpha_dw_beta_x(gates, alpha, beta, x_t, w_alpha_y, dy_tm1):
 			dg_alpha = dg(gates, alpha)
-			if alpha == beta:
-				return dg_alpha.reshape(h_size, 1) * (x_t + np.dot(w_alpha_y, d_y_tm1))
-			else:
-				return dg_alpha.reshape(h_size, 1) * np.dot(w_alpha_y, d_y_tm1)
+			if alpha != beta:
+				x_t = np.zeros_like(x_t)
+			return dg_alpha.reshape(h_size, 1) * (x_t + np.array([np.dot(w_alpha_y, tmp) for tmp in dy_tm1]))
 
-		def dc_dw_beta_x(gates, c_tm1, dc_tm1, beta, x_t, w_alpha_y, d_y_tm1):
-			retval = gates[0].reshape(h_size, 1) * dg_alpha_dw_beta_x(gates, 3, beta, x_t, w_alpha_y, d_y_tm1)
-			retval += gates[3].reshape(h_size, 1) * dg_alpha_dw_beta_x(gates, 0, beta, x_t, w_alpha_y, d_y_tm1)
+		def dc_dw_beta_x(gates, c_tm1, dc_tm1, beta, x_t, w_alpha_y, dy_tm1):
+			retval = gates[0].reshape(h_size, 1) * dg_alpha_dw_beta_x(gates, 3, beta, x_t, w_alpha_y, dy_tm1)
+			retval += gates[3].reshape(h_size, 1) * dg_alpha_dw_beta_x(gates, 0, beta, x_t, w_alpha_y, dy_tm1)
 			retval += gates[1].reshape(h_size, 1) * dc_tm1
-			retval += c_tm1.reshape(h_size, 1) * dg_alpha_dw_beta_x(gates, 1, beta, x_t, w_alpha_y, d_y_tm1)
-			retval = gates[2].reshape(h_size, 1) * retval
+			retval += c_tm1.reshape(h_size, 1) * dg_alpha_dw_beta_x(gates, 1, beta, x_t, w_alpha_y, dy_tm1)
 			return retval
 
 		def dy_dw_beta_x(gates, beta, cell, x_t, w_alpha_y, dy_tm1, dc):
-			retval = cell * dg(gates, 3)
-			retval = retval.reshape(h_size, 1) * (x_t + np.dot(w_alpha_y, dy_tm1))
-			retval = retval + gates[3].reshape(h_size, 1) * dc
+			retval = cell * dg(gates, 2)
+			retval = retval.reshape(h_size, 1) * dg_alpha_dw_beta_x(gates, 2, beta, x_t, w_alpha_y, dy_tm1)
+			retval = retval + gates[2].reshape(h_size, 1) * dc
 			return retval
 
 		dy = np.zeros((h_size, params_shape[0], params_shape[1])).astype(floatX)
@@ -196,9 +194,8 @@ for ir in xrange(params_shape[0]):
 		c_tm1 = c0
 		for t in xrange(0, N):
 			gates = [gi_1[t], gf_1[t], go_1[t], gc_1[t]]
-			dc = dc_dw_beta_x(gates, c_tm1, dc, d_component, data_in[t], v1, dy)
-			dy = dy_dw_beta_x(gates, d_component, c1[t], data_in[t], v1, dy, dc)
-
+			dc = dc_dw_beta_x(gates, c_tm1, dc, d_gate, data_in[t], v1, dy)
+			dy = dy_dw_beta_x(gates, d_gate, c1[t], data_in[t], v1, dy, dc)
 
 		dy = dEdy_t.reshape(h_size, 1) * dy
 		print("wang:\t%.6e" % (dy[0][ir][ic]))
