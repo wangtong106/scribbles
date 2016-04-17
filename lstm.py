@@ -2,14 +2,11 @@ import theano
 import theano.tensor as T
 import numpy as np
 import theano.tensor.nnet as nnet
-from keras import backend as K
-from keras import initializations
 import sys
 
 # SETUP
 floatX = theano.config.floatX
 np.random.seed(1)
-init = initializations.get('uniform')
 
 # SPECIFY THE PARAMETER TO TAKE GRADIENT OVER
 # i: 0, 1, 2, 3 corresponding to input, forget, output, and cell weighted inputs
@@ -33,8 +30,8 @@ weights = []
 
 for i in xrange(4):
 	weights.append([])
-	weights[i].append(init(w_shape))
-	weights[i].append(init(v_shape))
+	weights[i].append(theano.shared(np.random.uniform(size=w_shape).astype(floatX)))
+	weights[i].append(theano.shared(np.random.uniform(size=v_shape).astype(floatX)))
 	weights[i].append(T.zeros(b_shape))
 
 # INPUT PERTURBATION FOR NUMERICAL GRADIENTS
