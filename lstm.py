@@ -98,7 +98,8 @@ theano_d = theano.gradient.grad(err, weights[d_gate][d_component])
 # COMPILING THEANO FUNCTION
 # returning weights[:][1]: the weight matrix for the recurrent term h_tm1, which is often required by wang gradients
 lstm = theano.function(inputs=[data_in, data_out, c0, h0, delta],
-						outputs=[c, h, e, theano_d, graves_delta, gi, gf, go, gc, weights[0][1], weights[1][1], weights[2][1], weights[3][1]], on_unused_input='ignore')
+						outputs=[c, h, e, theano_d, graves_delta, gi, gf, go, gc], on_unused_input='ignore')
+get_w_ys = theano.function(inputs=[], outputs=[weights[0][1], weights[1][1], weights[2][1], weights[3][1]], on_unused_input='ignore')
 
 # MODEL I/O
 N = 5
@@ -136,8 +137,10 @@ for ir in xrange(params_shape[0]):
 		# delta[ir][ic] = w[ir][ic] * eps
 
 		# y- AND y+
-		[c1, h1, e1, theano_d1, graves_delta1, gi_1, gf_1, go_1, gc_1, wy_i_1, wy_f_1, wy_o_1, wy_c_1] = lstm(data_in, data_out, c0, h0, -delta)
-		[c2, h2, e2, theano_d2, graves_delta2, gi_2, gf_2, go_2, gc_2, wy_i_2, wy_f_2, wy_o_2, wy_c_2] = lstm(data_in, data_out, c0, h0, delta)
+		[c1, h1, e1, theano_d1, graves_delta1, gi_1, gf_1, go_1, gc_1] = lstm(data_in, data_out, c0, h0, -delta)
+		[c2, h2, e2, theano_d2, graves_delta2, gi_2, gf_2, go_2, gc_2] = lstm(data_in, data_out, c0, h0, delta)
+
+		[wy_i_1, wy_f_1, wy_o_1, wy_c_1] = get_w_ys()
 
 		# print('err1', e1)
 		# print('err2', e2)
